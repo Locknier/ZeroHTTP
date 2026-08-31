@@ -1,108 +1,134 @@
-# ZeroHTTP
+# ZeroHTTP: High-Performance C++11 Asynchronous Web Server
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![C++](https://img.shields.io/badge/c++-11%2B-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
+![Build](https://img.shields.io/badge/build-CMake-green.svg)
 
-[English Version](#english-version) | [中文说明](#中文版)
+> **ZeroHTTP** 是一個從零手寫的高性能、全非同步 C++11 HTTP Web 伺服器框架。底層架構深受 **Muduo** 與 **Nginx** 啟發，採用嚴格的非阻塞事件驅動 (Non-blocking Event-driven) 設計與 One-Loop-Per-Thread 多核心併發模型。
+
+本作旨在深研 Linux 底層系統編程、**Zero-Copy (零拷貝)** 機制、**Zero-Allocation (零動態分配)** 實踐，以及工業級高併發架構之精髓，是一件為榨乾單機硬體效能而生的藝術品。
 
 ---
 
-<a id="english-version"></a>
-## English Version
+## 🚀 核心極致優化 (Core Optimizations)
 
-### Introduction
-`ZeroHTTP` is a high-performance, asynchronous HTTP Web Server written in modern C++11 from scratch. It is designed to handle high concurrency using a strictly non-blocking, multi-threaded event-driven architecture, inspired by top-tier frameworks like Muduo and Nginx. 
+### 1. 徹底消滅資料競爭 (Race Condition Free)
+* **痛點**：在 Epoll 邊緣觸發 (ET) 模式下，同一個 Socket 的資料若分次抵達，極易觸發多個 ThreadPool 執行緒同時讀寫該 Socket，導致 Context 嚴重錯亂。
+* **解法**：全面引入 `EPOLLONESHOT` 機制。確保 Socket 觸發讀寫事件後自動於 Epoll 中「隱身」，直到工作執行緒完成 HTTP 解析並針對半包/全包狀態使用 `EPOLL_CTL_MOD` 重新武裝，從根源上保證並發環境的執行緒安全。
 
-This project aims to demonstrate the capabilities of Linux system programming, zero-allocation resource management, and robust concurrent architectures.
+### 2. Zero-Copy 零拷貝與 64KB Stack-fallback
+* **痛點**：傳統網路緩衝區依賴 `std::string::append` 或巨型 Heap `new`，頻繁的系統呼叫 (System Calls) 與深拷貝會導致極高的延遲與 CPU Cache 失效。
+* **解法**：捨棄傳統字串拼接，底層採用作業系統原生 API `readv` 實作 Scatter/Gather I/O 分散收集機制。結合 64KB 的棧記憶體 (Stack-fallback)，超大 HTTP 封包也能一次性切入 Stack 中，大幅減少 `read` 呼叫次數，完成極致的 Cache-friendly 吞吐。
 
-### Key Features
-- **Master-Slave Reactor Architecture**: Utilizes a single Main Reactor for listening and dispatching, and multiple Sub-Reactors (EventLoops) for non-blocking I/O multiplexing.
-- **Epoll Edge-Triggered (ET) & EPOLLONESHOT**: Maximizes I/O efficiency with fully drained non-blocking sockets and prevents thread contention on the same file descriptor.
-- **Zero-Copy Scatter/Gather Buffer**: Implements `readv` and a dynamic sliding window buffer equipped with 64KB stack-fallback to minimize context switches and heap allocations.
-- **Zero-Allocation Object Pool**: Pre-allocates a massive pool of reusable TCP connections avoiding `new`/`delete` fragmentation during high traffic.
-- **Double-Buffering Async Logger**: Wait-free background disk logging utilizing atomic pointer `swap()`, ensuring the frontend EventLoops are never blocked by disk I/O.
-- **Robust Connection Management**: Implements a `timerfd`-based timing wheel to efficiently clean up dead or slowloris Keep-Alive socket connections.
-- **Graceful Shutdown**: Utilizes Linux `eventfd` to notify and wake up all sleeping threads instantly when a `SIGINT` (Ctrl+C) signal is received.
-- **Static HTTP Router**: A built-in safe URL router serving HTML/CSS/Images straight from the `www/` directory while preventing path traversal attacks.
+### 3. 無分配物件池 (Zero-Allocation Object Pool)
+* **痛點**：面對每秒上萬次併發請求，頻繁的 `new TcpConnection()` 會導致 OS 堆積 (Heap) 產生千瘡百孔的記憶體碎片，引發 OOM 或分配速度斷崖下跌。
+* **解法**：於伺服器啟動時，一次性預配置上萬個連線物件與 `free_list_`。在洪峰流量來襲時，新連線的分發僅為 $O(1)$ 的指標彈出，達成伺服器生命週期內的 Zero-Allocation。
 
-### Project Structure
+### 4. 雙緩衝非同步日誌 (Double-Buffering Async Logger)
+* **痛點**：高併發下直接使用 `std::cout` 或普通 Mutex 寫檔，會讓底層磁碟 I/O 嚴重阻塞 Reactor 的事件派發迴圈，拖垮整個系統吞吐。
+* **解法**：前端業務執行緒僅將日誌寫入 1MB 記憶體區塊，後台寫檔執行緒甦醒時，使用底層 `std::swap` 直接對調前端與自己的緩衝區指標。**這個指標對調動作為 $O(1)$ 時間複雜度且僅需幾奈秒**，完美達成前後端無鎖解耦 (Lock-free)。
+
+### 5. 防禦性連接管理 (Defensive Connection Management)
+* **痛點**：惡意連線 (如 Slowloris 攻擊) 會霸佔 Socket fd 不放，導致伺服器資源枯竭。
+* **解法**：利用 `timerfd` 設計底層時間輪演算法 (Timing Wheel)，每 5 秒批次剔除惡意佔用或超時的 Keep-Alive 連線，對攻擊全面免疫。
+
+---
+
+## 📊 系統架構圖解 (Architecture)
+
 ```text
-ZeroHTTP/
-├── CMakeLists.txt
-├── build/       (CMake build artifacts)
-├── conf/        (Configuration files e.g., server.conf)
-├── docs/        (Architecture and research documentation)
-├── include/     (Header files)
-├── logs/        (Asynchronous log output directory)
-├── src/         (C++ source files)
-└── www/         (Static web document root)
+                      +-----------------------------------+
+                      |      Incoming HTTP Requests       |
+                      +-----------------+-----------------+
+                                        | (Least Connections Dispatch)
+                                        v
+                       +----------------------------------+
+                       |      Master Reactor (Epoll)      |
+                       +----------------+-----------------+
+                                        |
+                 +----------------------+----------------------+
+                 |                      |                      |
+                 v                      v                      v
+     +-------------------+  +-------------------+  +-------------------+
+     | Sub-Reactor 1     |  | Sub-Reactor 2     |  | Sub-Reactor N     |
+     | (Epoll + ONESHOT) |  | (Epoll + ONESHOT) |  | (Epoll + ONESHOT) |
+     +---------+---------+  +---------+---------+  +---------+---------+
+               |                      |                      |
+               +----------------------+----------------------+
+                                      |
+                                      v (Async Parsing)
+                             +-------------------+
+                             |    ThreadPool     |
+                             | (Worker Threads)  |
+                             +--------+----------+
+                                      |
+                                      v (Lock-free O(1) swap)
+                             +-------------------+
+                             |  AsyncLogger disk |
+                             +-------------------+
 ```
 
-### Build & Run
-1. Ensure your Linux environment has `g++` (supports C++11) and `cmake` installed.
-2. Build the project:
-   ```bash
-   mkdir build && cd build
-   cmake ..
-   make
-   ```
-3. Run the server (the executable `zero_httpd` is generated in the project root):
-   ```bash
-   cd ..
-   ./zero_httpd
-   ```
-4. Access the server via your browser: `http://127.0.0.1:8080/`
-5. Check backend logs at `logs/server.log`. Configuration can be altered via `conf/server.conf`.
-
 ---
 
-<a id="中文版"></a>
-## 中文版
+## 📂 原始碼結構與職責分佈
 
-### 项目简介
-`ZeroHTTP` 是一个从零手写的高性能、全异步 C++11 HTTP Web 伺服器框架。它的底层设计深受著名开源网络库 Muduo 与 Nginx 架构的启发，采用了严格的非阻塞事件驱动设计与多核心并发模型。
+本專案採用最嚴謹的微服務/引擎開發目錄結構設計：
 
-本项目旨在深研 Linux 底层系统编程、零内存分配（Zero-Allocation）实践以及工业级高并发架构之精髓，是一件为榨干单机硬体效能而生的艺术品。
-
-### 核心特性
-- **Master-Slave Reactor 架构**：采用 One-Loop-Per-Thread。主线程专职连线接收与智能分发，多个子反应堆在后台执行 I/O 多路复用。
-- **Epoll 边缘触发 (ET) 与 EPOLLONESHOT**：将非阻塞读写压榨到极致，并保证同一 Socket FD 在多线程解析中绝对不会发生数据竞争。
-- **Zero-Copy 零拷贝缓冲 (Scatter/Gather I/O)**：抛弃传统的 `std::string` 深拷贝，运用 `readv` 结合 64KB 栈内存分配机制（Stack-fallback），实现真正的内核态零拷贝。
-- **无分配对象池 (Object Pool)**：在启动时预先开辟一万个连线对象，面对洪峰流量时实现 `new`/`delete` 零开销，彻底杜绝内存碎片。
-- **双缓冲异步日志系统 (Double Buffering Logger)**：前端记录无感知，后端通过 `O(1)` 指针 `swap()` 同步缓冲区。绝佳的无锁态后台刷盘机制。
-- **防御性连接管理**：底层整合 `timerfd` 与时间轮算法，高效清理沉默的 Keep-Alive 连线，对 Slowloris 攻击免疫。
-- **优雅关机机制**：透过轻量化内核机制 `eventfd`，在接收到 `SIGINT` (Ctrl+C) 信号瞬间，无损唤醒全部休眠线程实现资源回收。
-- **HTTP 静态路由器**：自带抵御路径穿越攻击 (Directory Traversal Attack) 的静态路由，支持全类型多媒体二进位文件读取。
-
-### 目录结构
 ```text
 ZeroHTTP/
-├── CMakeLists.txt
-├── build/       (CMake 编译中间文件存放区)
-├── conf/        (设定档目录，如 server.conf)
-├── docs/        (架构解析与重构历程文档)
-├── include/     (所有的 .h 头文件)
-├── logs/        (异步双缓冲日志输出位置)
-├── src/         (所有的 C++ 源代码文件)
-└── www/         (HTTP 服务器静态资源根目录)
+├── CMakeLists.txt              # 現代 C++ 構建腳本
+├── README.md                   # 本說明文件
+├── build/                      # Out-of-source 構建中介檔目錄
+├── conf/
+│   └── server.conf             # 伺服器動態配置檔 (Port, Threads, Timeout)
+├── include/                    # 標頭檔 (API 介面層)
+│   ├── TcpServer.h             # 封裝好的 Facade 外觀模式伺服器引擎
+│   ├── EventLoop.h             # 核心 Sub-Reactor 事件迴圈
+│   ├── Buffer.h                # Zero-Copy 記憶體緩衝區機制
+│   └── ...
+├── src/                        # 原始碼 (實作層)
+│   ├── main.cpp                # 伺服器啟動腳本
+│   ├── HttpParser.cpp          # HTTP 靜態路由器與解析引擎
+│   ├── AsyncLogger.cpp         # 雙緩衝日誌引擎
+│   └── ...
+├── logs/                       # AsyncLogger 非同步寫檔輸出區 (server.log)
+└── www/                        # HTTP 伺服器掛載之靜態資源根目錄 (HTML/CSS)
 ```
-
-### 编译与执行
-1. 请确保你的 Linux 环境已安装支援 C++11 的 `g++` 编译器以及 `cmake`。
-2. 编译专案：
-   ```bash
-   mkdir build && cd build
-   cmake ..
-   make
-   ```
-3. 运行伺服器（编译出来的执行档 `zero_httpd` 会自动生成在项目根目录）：
-   ```bash
-   cd ..
-   ./zero_httpd
-   ```
-4. 打开浏览器连线：`http://127.0.0.1:8080/`
-5. 你可以查看 `logs/server.log` 观测后端运作逻辑，或修改 `conf/server.conf` 进行热配置。
 
 ---
 
+## 🛠️ 快速開始與編譯指南
+
+### 環境要求
+* C++ 支援至 C++11 (預設 g++ 或 clang++)
+* CMake >= 3.10
+* OS: Linux (支援 Epoll 與 eventfd/timerfd 等特性)
+
+### 獲取與編譯步驟
+
+```bash
+# 1. Clone 專案並進入目錄
+git clone https://github.com/<your-username>/ZeroHTTP.git
+cd ZeroHTTP
+
+# 2. 建立並進入 build 暫存目錄
+mkdir -p build && cd build
+
+# 3. 執行 CMake 配置
+cmake ..
+
+# 4. 進行多執行緒平行編譯
+make -j4
+
+# 5. 編譯完成，執行檔會產出於專案根目錄
+cd ..
+./zero_httpd
+```
+
+### 配置與服務測試
+1. 伺服器預設讀取 `conf/server.conf` 中的配置 (預設啟動 `PORT=8080`)。
+2. 打開瀏覽器訪問：[http://127.0.0.1:8080/](http://127.0.0.1:8080/)
+3. 可以在 `logs/server.log` 觀察伺服器極高效率的非同步 I/O 排程狀況。如果你擁有 Nginx 架設經驗，強烈建議將 Nginx 放置於前端作為 SSL 卸載 (SSL Termination)，與後端 `ZeroHTTP` 達成最強雙劍合璧！
+
+---
