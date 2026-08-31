@@ -5,37 +5,37 @@
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 ![Build](https://img.shields.io/badge/build-CMake-green.svg)
 
-> **ZeroHTTP** 是一個從零手寫的高性能、全非同步 C++11 HTTP Web 伺服器框架。底層架構深受 **Muduo** 與 **Nginx** 啟發，採用嚴格的非阻塞事件驅動 (Non-blocking Event-driven) 設計與 One-Loop-Per-Thread 多核心併發模型。
+> **ZeroHTTP** 是一个从零手写的高性能、全异步 C++11 HTTP Web 服务器框架。底层架构深受 **Muduo** 与 **Nginx** 启发，采用严格的非阻塞事件驱动 (Non-blocking Event-driven) 设计与 One-Loop-Per-Thread 多核心并发模型。
 
-本作旨在深研 Linux 底層系統編程、**Zero-Copy (零拷貝)** 機制、**Zero-Allocation (零動態分配)** 實踐，以及工業級高併發架構之精髓，是一件為榨乾單機硬體效能而生的藝術品。
-
----
-
-## 🚀 核心極致優化 (Core Optimizations)
-
-### 1. 徹底消滅資料競爭 (Race Condition Free)
-* **痛點**：在 Epoll 邊緣觸發 (ET) 模式下，同一個 Socket 的資料若分次抵達，極易觸發多個 ThreadPool 執行緒同時讀寫該 Socket，導致 Context 嚴重錯亂。
-* **解法**：全面引入 `EPOLLONESHOT` 機制。確保 Socket 觸發讀寫事件後自動於 Epoll 中「隱身」，直到工作執行緒完成 HTTP 解析並針對半包/全包狀態使用 `EPOLL_CTL_MOD` 重新武裝，從根源上保證並發環境的執行緒安全。
-
-### 2. Zero-Copy 零拷貝與 64KB Stack-fallback
-* **痛點**：傳統網路緩衝區依賴 `std::string::append` 或巨型 Heap `new`，頻繁的系統呼叫 (System Calls) 與深拷貝會導致極高的延遲與 CPU Cache 失效。
-* **解法**：捨棄傳統字串拼接，底層採用作業系統原生 API `readv` 實作 Scatter/Gather I/O 分散收集機制。結合 64KB 的棧記憶體 (Stack-fallback)，超大 HTTP 封包也能一次性切入 Stack 中，大幅減少 `read` 呼叫次數，完成極致的 Cache-friendly 吞吐。
-
-### 3. 無分配物件池 (Zero-Allocation Object Pool)
-* **痛點**：面對每秒上萬次併發請求，頻繁的 `new TcpConnection()` 會導致 OS 堆積 (Heap) 產生千瘡百孔的記憶體碎片，引發 OOM 或分配速度斷崖下跌。
-* **解法**：於伺服器啟動時，一次性預配置上萬個連線物件與 `free_list_`。在洪峰流量來襲時，新連線的分發僅為 $O(1)$ 的指標彈出，達成伺服器生命週期內的 Zero-Allocation。
-
-### 4. 雙緩衝非同步日誌 (Double-Buffering Async Logger)
-* **痛點**：高併發下直接使用 `std::cout` 或普通 Mutex 寫檔，會讓底層磁碟 I/O 嚴重阻塞 Reactor 的事件派發迴圈，拖垮整個系統吞吐。
-* **解法**：前端業務執行緒僅將日誌寫入 1MB 記憶體區塊，後台寫檔執行緒甦醒時，使用底層 `std::swap` 直接對調前端與自己的緩衝區指標。**這個指標對調動作為 $O(1)$ 時間複雜度且僅需幾奈秒**，完美達成前後端無鎖解耦 (Lock-free)。
-
-### 5. 防禦性連接管理 (Defensive Connection Management)
-* **痛點**：惡意連線 (如 Slowloris 攻擊) 會霸佔 Socket fd 不放，導致伺服器資源枯竭。
-* **解法**：利用 `timerfd` 設計底層時間輪演算法 (Timing Wheel)，每 5 秒批次剔除惡意佔用或超時的 Keep-Alive 連線，對攻擊全面免疫。
+本作旨在深研 Linux 底层系统编程、**Zero-Copy (零拷贝)** 机制、**Zero-Allocation (零动态分配)** 实践，以及工业级高并发架构之精髓，是一件为榨干单机硬件效能而生的艺术品。
 
 ---
 
-## 📊 系統架構圖解 (Architecture)
+## 🚀 核心极致优化 (Core Optimizations)
+
+### 1. 彻底消灭数据竞争 (Race Condition Free)
+* **痛点**：在 Epoll 边缘触发 (ET) 模式下，同一个 Socket 的数据若分次抵达，极易触发多个 ThreadPool 线程同时读写该 Socket，导致 Context 严重错乱。
+* **解法**：全面引入 `EPOLLONESHOT` 机制。确保 Socket 触发读写事件后自动于 Epoll 中“隐身”，直到工作线程完成 HTTP 解析并针对半包/全包状态使用 `EPOLL_CTL_MOD` 重新武装，从根源上保证并发环境的线程安全。
+
+### 2. Zero-Copy 零拷贝与 64KB Stack-fallback
+* **痛点**：传统网络缓冲区依赖 `std::string::append` 或巨型 Heap `new`，频繁的系统调用 (System Calls) 与深拷贝会导致极高的延迟与 CPU Cache 失效。
+* **解法**：舍弃传统字符串拼接，底层采用操作系统原生 API `readv` 实现 Scatter/Gather I/O 分散收集机制。结合 64KB 的栈内存 (Stack-fallback)，超大 HTTP 数据包也能一次性切入 Stack 中，大幅减少 `read` 调用次数，完成极致的 Cache-friendly 吞吐。
+
+### 3. 无分配对象池 (Zero-Allocation Object Pool)
+* **痛点**：面对每秒上万次并发请求，频繁的 `new TcpConnection()` 会导致 OS 堆区 (Heap) 产生千疮百孔的内存碎片，引发 OOM 或分配速度断崖下跌。
+* **解法**：于服务器启动时，一次性预配置上万个连接对象与 `free_list_`。在洪峰流量来袭时，新连接的分发仅为 $O(1)$ 的指针弹出，达成服务器生命周期内的 Zero-Allocation。
+
+### 4. 双缓冲异步日志 (Double-Buffering Async Logger)
+* **痛点**：高并发下直接使用 `std::cout` 或普通 Mutex 写文件，会让底层磁盘 I/O 严重阻塞 Reactor 的事件派发循环，拖垮整个系统吞吐。
+* **解法**：前端业务线程仅将日志写入 1MB 内存区块，后台写文件线程苏醒时，使用底层 `std::swap` 直接对调前端与自己的缓冲区指针。**这个指针对调动作为 $O(1)$ 时间复杂度且仅需几纳秒**，完美达成前后端无锁解耦 (Lock-free)。
+
+### 5. 防御性连接管理 (Defensive Connection Management)
+* **痛点**：恶意连接 (如 Slowloris 攻击) 会霸占 Socket fd 不放，导致服务器资源枯竭。
+* **解法**：利用 `timerfd` 设计底层时间轮算法 (Timing Wheel)，每 5 秒批次剔除恶意占用或超时的 Keep-Alive 连接，对攻击全面免疫。
+
+---
+
+## 📊 系统架构图解 (Architecture)
 
 ```text
                       +-----------------------------------+
@@ -71,64 +71,64 @@
 
 ---
 
-## 📂 原始碼結構與職責分佈
+## 📂 源码结构与职责分布
 
-本專案採用最嚴謹的微服務/引擎開發目錄結構設計：
+本项目采用最严谨的微服务/引擎开发目录结构设计：
 
 ```text
 ZeroHTTP/
-├── CMakeLists.txt              # 現代 C++ 構建腳本
-├── README.md                   # 本說明文件
-├── build/                      # Out-of-source 構建中介檔目錄
+├── CMakeLists.txt              # 现代 C++ 构建脚本
+├── README.md                   # 本说明文件
+├── build/                      # Out-of-source 构建中间档目录
 ├── conf/
-│   └── server.conf             # 伺服器動態配置檔 (Port, Threads, Timeout)
-├── include/                    # 標頭檔 (API 介面層)
-│   ├── TcpServer.h             # 封裝好的 Facade 外觀模式伺服器引擎
-│   ├── EventLoop.h             # 核心 Sub-Reactor 事件迴圈
-│   ├── Buffer.h                # Zero-Copy 記憶體緩衝區機制
+│   └── server.conf             # 服务器动态配置文件 (Port, Threads, Timeout)
+├── include/                    # 头文件 (API 接口层)
+│   ├── TcpServer.h             # 封装好的 Facade 外观模式服务器引擎
+│   ├── EventLoop.h             # 核心 Sub-Reactor 事件循环
+│   ├── Buffer.h                # Zero-Copy 内存缓冲区机制
 │   └── ...
-├── src/                        # 原始碼 (實作層)
-│   ├── main.cpp                # 伺服器啟動腳本
-│   ├── HttpParser.cpp          # HTTP 靜態路由器與解析引擎
-│   ├── AsyncLogger.cpp         # 雙緩衝日誌引擎
+├── src/                        # 源码 (实现层)
+│   ├── main.cpp                # 服务器启动脚本
+│   ├── HttpParser.cpp          # HTTP 静态路由器与解析引擎
+│   ├── AsyncLogger.cpp         # 双缓冲日志引擎
 │   └── ...
-├── logs/                       # AsyncLogger 非同步寫檔輸出區 (server.log)
-└── www/                        # HTTP 伺服器掛載之靜態資源根目錄 (HTML/CSS)
+├── logs/                       # AsyncLogger 异步写文件输出区 (server.log)
+└── www/                        # HTTP 服务器挂载之静态资源根目录 (HTML/CSS)
 ```
 
 ---
 
-## 🛠️ 快速開始與編譯指南
+## 🛠️ 快速开始与编译指南
 
-### 環境要求
-* C++ 支援至 C++11 (預設 g++ 或 clang++)
+### 环境要求
+* C++ 支持至 C++11 (默认 g++ 或 clang++)
 * CMake >= 3.10
-* OS: Linux (支援 Epoll 與 eventfd/timerfd 等特性)
+* OS: Linux (支持 Epoll 与 eventfd/timerfd 等特性)
 
-### 獲取與編譯步驟
+### 获取与编译步骤
 
 ```bash
-# 1. Clone 專案並進入目錄
+# 1. Clone 项目并进入目录
 git clone https://github.com/<your-username>/ZeroHTTP.git
 cd ZeroHTTP
 
-# 2. 建立並進入 build 暫存目錄
+# 2. 创建并进入 build 暂存目录
 mkdir -p build && cd build
 
-# 3. 執行 CMake 配置
+# 3. 执行 CMake 配置
 cmake ..
 
-# 4. 進行多執行緒平行編譯
+# 4. 进行多线程并行编译
 make -j4
 
-# 5. 編譯完成，執行檔會產出於專案根目錄
+# 5. 编译完成，执行档会产出于项目根目录
 cd ..
 ./zero_httpd
 ```
 
-### 配置與服務測試
-1. 伺服器預設讀取 `conf/server.conf` 中的配置 (預設啟動 `PORT=8080`)。
-2. 打開瀏覽器訪問：[http://127.0.0.1:8080/](http://127.0.0.1:8080/)
-3. 可以在 `logs/server.log` 觀察伺服器極高效率的非同步 I/O 排程狀況。如果你擁有 Nginx 架設經驗，強烈建議將 Nginx 放置於前端作為 SSL 卸載 (SSL Termination)，與後端 `ZeroHTTP` 達成最強雙劍合璧！
+### 配置与服务测试
+1. 服务器默认读取 `conf/server.conf` 中的配置 (默认启动 `PORT=8080`)。
+2. 打开浏览器访问：[http://127.0.0.1:8080/](http://127.0.0.1:8080/)
+3. 可以在 `logs/server.log` 观察服务器极高效率的异步 I/O 调度状况。如果你拥有 Nginx 架设经验，强烈建议将 Nginx 放置于前端作为 SSL 卸载 (SSL Termination)，与后端 `ZeroHTTP` 达成最强双剑合璧！
 
 ---
