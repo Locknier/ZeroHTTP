@@ -1,11 +1,57 @@
-# 忽略編譯目錄與執行檔
-build/
-cmake-build-debug/
-zero_httpd
-logs/
+# Prerequisites
+*.d
 
-# 忽略 CMake 產生檔
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake
 CMakeCache.txt
-CMakeFiles/
-*.cmake
+CMakeFiles
+CMakeScripts
+Testing
 Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+
+# CLion / IntelliJ
+.idea/
+cmake-build-*/
+# Logs
+logs/
+*.log
+
+# Ignore local builds and binaries
+ZeroHTTPApp
+dummy.txt
+build/
+cmake-build-*/
